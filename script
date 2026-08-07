@@ -25,30 +25,28 @@ local Tabs = {
     AutoFarm = Window:Tab({ Title = "AutoFarm", Icon = "boxes" })
 }
 
--- Настройки фарма
+-- Настройки автофарма
 Tabs.AutoFarm:Section({Title = "Settings"})
 
 local AutoFarmCoins = false
-local MagnetSpeed = 18
+local MagnetSpeed = 25 -- Скорость перемещения (можно регулировать)
 local CollectedCoins = {}
 local NoclipConnection = nil
 
--- 1. Управление физикой и полетом
+-- 1. Полное отключение коллизии и физики падения
 local function EnablePhysics(state)
     local player = game.Players.LocalPlayer
     local char = player.Character
     if not char then return end
     
-    local hrp = char:FindFirstChild("HumanoidRootPart")
-    local humanoid = char:FindFirstChild("Humanoid")
-    if not hrp or not humanoid then return end
+    local humanoid = char:FindFirstChildOfClass("Humanoid")
 
     if state then
-        -- Включаем Noclip
+        -- Отключаем коллизию всех частей персонажа
         if not NoclipConnection then
             NoclipConnection = game:GetService("RunService").Stepped:Connect(function()
                 if char and char.Parent then
-                    for _, part in ipairs(char:GetChildren()) do
+                    for _, part in ipairs(char:GetDescendants()) do
                         if part:IsA("BasePart") then
                             part.CanCollide = false
                         end
@@ -57,29 +55,24 @@ local function EnablePhysics(state)
             end)
         end
 
-        -- Настройка полета через CFrame (самый надежный метод без багов физики)
-        local bodyVel = hrp:FindFirstChild("FarmFlyVel")
-        if not bodyVel then
-            bodyVel = Instance.new("BodyVelocity")
-            bodyVel.Name = "FarmFlyVel"
-            bodyVel.MaxForce = Vector3.new(1e6, 1e6, 1e6)
-            bodyVel.Velocity = Vector3.zero
-            bodyVel.Parent = hrp
+        -- Переводим в режим свободного перемещения (отключаем гравитацию для персонажа)
+        if humanoid then
+            humanoid.PlatformStand = true
         end
     else
-        -- Отключаем Noclip
+        -- Выключаем Noclip
         if NoclipConnection then
             NoclipConnection:Disconnect()
             NoclipConnection = nil
         end
-        
-        local bodyVel = hrp:FindFirstChild("FarmFlyVel")
-        if bodyVel then
-            bodyVel:Destroy()
+
+        -- Возвращаем нормальное состояние Humanoid
+        if humanoid then
+            humanoid.PlatformStand = false
         end
-        
-        -- Восстанавливаем коллизию персонажа
-        for _, part in ipairs(char:GetChildren()) do
+
+        -- Включаем обратно коллизию
+        for _, part in ipairs(char:GetDescendants()) do
             if part:IsA("BasePart") then
                 part.CanCollide = true
             end
@@ -87,7 +80,7 @@ local function EnablePhysics(state)
     end
 end
 
--- 2. Точный поиск ближайшей монеты на любой карте
+-- 2. Глубокий и точный поиск детали монеты
 local function GetClosestCoin()
     local player = game.Players.LocalPlayer
     local char = player.Character
@@ -97,10 +90,10 @@ local function GetClosestCoin()
     if not hrp then return nil end
     
     local myPos = hrp.Position
-    local closestCoin = nil
+    local closestCoinPart = nil
     local shortestDistance = math.huge
     
-    -- Ищем активный CoinContainer
+    -- Ищем активный CoinContainer во всех объектах workspace
     local coinContainer = nil
     for _, map in ipairs(workspace:GetChildren()) do
         local container = map:FindFirstChild("CoinContainer")
@@ -111,36 +104,38 @@ local function GetClosestCoin()
     end
 
     if coinContainer then
-        for _, obj in ipairs(coinContainer:GetChildren()) do
-            -- Проверяем, что объект существует и не находится в локальном черном списке
-            if obj and obj.Parent and not CollectedCoins[obj] then
+        for _, coinObj in ipairs(coinContainer:GetChildren()) do
+            -- Проверяем, не забанена ли монета в локальном списке
+            if coinObj and coinObj.Parent and not CollectedCoins[coinObj] then
+                local targetPart = nil
                 
-                -- Ищем точную деталь MainCoin
-                local part = nil
-                if obj:IsA("BasePart") then
-                    part = obj
+                if coinObj:IsA("BasePart") then
+                    targetPart = coinObj
                 else
-                    local coinVisual = obj:FindFirstChild("CoinVisual")
+                    -- Ищем MainCoin внутри CoinVisual или напрямую в модели
+                    local coinVisual = coinObj:FindFirstChild("CoinVisual")
                     if coinVisual then
-                        part = coinVisual:FindFirstChild("MainCoin") or coinVisual:FindFirstChildWhichIsA("BasePart")
-                    else
-                        part = obj:FindFirstChild("MainCoin") or obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart", true)
+                        targetPart = coinVisual:FindFirstChild("MainCoin") or coinVisual:FindFirstChildWhichIsA("BasePart")
+                    end
+                    
+                    if not targetPart then
+                        targetPart = coinObj:FindFirstChild("MainCoin") or coinObj.PrimaryPart or coinObj:FindFirstChildWhichIsA("BasePart", true)
                     end
                 end
 
-                -- Проверка валидности монеты
-                if part and part:IsA("BasePart") and part.Parent and part.Transparency < 1 then
-                    local dist = (myPos - part.Position).Magnitude
+                -- Проверяем, что деталь видима и валидна
+                if targetPart and targetPart:IsA("BasePart") and targetPart.Parent and targetPart.Transparency < 1 then
+                    local dist = (myPos - targetPart.Position).Magnitude
                     if dist < shortestDistance then
                         shortestDistance = dist
-                        closestCoin = part
+                        closestCoinPart = targetPart
                     end
                 end
             end
         end
     end
     
-    return closestCoin
+    return closestCoinPart
 end
 
 -- 3. Переключатель WindUI
@@ -157,10 +152,10 @@ Tabs.AutoFarm:Toggle({
     end
 })
 
--- 4. Главный цикл фарма
+-- 4. Главный цикл полета через CFrame
 task.spawn(function()
     while true do
-        task.wait()
+        local dt = task.wait()
         
         if AutoFarmCoins then
             local player = game.Players.LocalPlayer
@@ -168,7 +163,7 @@ task.spawn(function()
             
             if char and char.Parent then
                 local hrp = char:FindFirstChild("HumanoidRootPart")
-                local humanoid = char:FindFirstChild("Humanoid")
+                local humanoid = char:FindFirstChildOfClass("Humanoid")
                 
                 if hrp and humanoid and humanoid.Health > 0 then
                     local targetCoin = GetClosestCoin()
@@ -178,32 +173,33 @@ task.spawn(function()
                         local currentPos = hrp.Position
                         local distance = (targetPos - currentPos).Magnitude
                         
-                        -- Если подлетели вплотную к монете
-                        if distance <= 1.5 then
-                            -- Физическое смещение прямо на монету для сбора
+                        if distance <= 2 then
+                            -- Долетели: касаемся монеты и метку ставим на контейнер монеты
                             hrp.CFrame = targetCoin.CFrame
                             
-                            -- Заносим модель монеты в локальный список собранных
-                            local topModel = targetCoin:FindFirstAncestorWhichIsA("Model") or targetCoin.Parent
-                            if topModel then
-                                CollectedCoins[topModel] = true
-                            end
+                            -- Заносим саму деталь и её родителя в список собранных
                             CollectedCoins[targetCoin] = true
-                            
-                            task.wait(0.08)
-                        else
-                            -- Плавный полет к монете
-                            local direction = (targetPos - currentPos).Unit
-                            local flyVel = hrp:FindFirstChild("FarmFlyVel")
-                            if flyVel then
-                                flyVel.Velocity = direction * MagnetSpeed
+                            if targetCoin.Parent then
+                                CollectedCoins[targetCoin.Parent] = true
                             end
-                        end
-                    else
-                        -- Останавливаемся, если монет на карте больше нет
-                        local flyVel = hrp:FindFirstChild("FarmFlyVel")
-                        if flyVel then
-                            flyVel.Velocity = Vector3.zero
+                            if targetCoin.Parent and targetCoin.Parent.Parent and targetCoin.Parent.Parent ~= workspace then
+                                CollectedCoins[targetCoin.Parent.Parent] = true
+                            end
+                            
+                            task.wait(0.05)
+                        else
+                            -- Плавное перемещение CFrame к монете
+                            local direction = (targetPos - currentPos).Unit
+                            local moveStep = direction * (MagnetSpeed * dt * 10)
+                            
+                            if moveStep.Magnitude > distance then
+                                hrp.CFrame = CFrame.new(targetPos)
+                            else
+                                hrp.CFrame = CFrame.new(currentPos + moveStep)
+                            end
+                            
+                            -- Сбрасываем скорость падения
+                            hrp.AssemblyLinearVelocity = Vector3.zero
                         end
                     end
                 end
