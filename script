@@ -89,7 +89,7 @@ local function EnablePhysics(state)
     end
 end
 
--- 2. Поиск ближайшей монеты (Оптимизированный)
+-- 2. Поиск ближайшей монеты (Прямой доступ к Yacht / Hotel / Factory)
 local function GetClosestCoin()
     local player = game.Players.LocalPlayer
     local char = player.Character
@@ -102,29 +102,34 @@ local function GetClosestCoin()
     local closestCoin = nil
     local shortestDistance = math.huge
     
-    -- Шаг 1: Проверяем только верхний уровень workspace (карты)
+    -- 1. Ищем папку с монетами на активной карте (Yacht, Hotel, Factory и т.д.)
+    local coinContainer = nil
+    
     for _, map in ipairs(workspace:GetChildren()) do
         local container = map:FindFirstChild("CoinContainer")
-        
-        -- Шаг 2: Если на карте есть контейнер с монетами, проверяем только их
         if container then
-            for _, obj in ipairs(container:GetChildren()) do
-                -- Пропускаем уже собранные
-                if obj and obj.Parent and not CollectedCoins[obj] then
-                    
-                    -- Ищем физическую часть (саму монету или ее CoinVisual)
-                    local part = obj:IsA("BasePart") and obj 
-                        or obj:FindFirstChild("CoinVisual") 
-                        or (obj:IsA("Model") and (obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart")))
-                    
-                    if part and part:IsA("BasePart") and part.Parent and part.Transparency < 1 then
-                        local coinPos = part.Position
-                        if coinPos then
-                            local dist = (myPos - coinPos).Magnitude
-                            if dist < shortestDistance then
-                                shortestDistance = dist
-                                closestCoin = part
-                            end
+            coinContainer = container
+            break
+        end
+    end
+
+    -- 2. Перебираем МОНЕТЫ НАПРЯМУЮ (без GetDescendants)
+    if coinContainer then
+        for _, obj in ipairs(coinContainer:GetChildren()) do
+            if obj and obj.Parent and not CollectedCoins[obj] then
+                
+                -- Берем физический Part монеты или ее CoinVisual
+                local part = obj:IsA("BasePart") and obj 
+                    or obj:FindFirstChild("CoinVisual") 
+                    or (obj:IsA("Model") and (obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart")))
+
+                if part and part:IsA("BasePart") and part.Parent and part.Transparency < 1 then
+                    local coinPos = part.Position
+                    if coinPos then
+                        local dist = (myPos - coinPos).Magnitude
+                        if dist < shortestDistance then
+                            shortestDistance = dist
+                            closestCoin = part
                         end
                     end
                 end
