@@ -89,7 +89,7 @@ local function EnablePhysics(state)
     end
 end
 
--- 2. Поиск ближайшей монеты (Прямой доступ к Yacht / Hotel / Factory)
+-- 2. Поиск ближайшей монеты (Точечный поиск для глубинной структуры BioLab / Yacht)
 local function GetClosestCoin()
     local player = game.Players.LocalPlayer
     local char = player.Character
@@ -102,9 +102,8 @@ local function GetClosestCoin()
     local closestCoin = nil
     local shortestDistance = math.huge
     
-    -- 1. Ищем папку с монетами на активной карте (Yacht, Hotel, Factory и т.д.)
+    -- 1. Ищем активную карту с CoinContainer в workspace
     local coinContainer = nil
-    
     for _, map in ipairs(workspace:GetChildren()) do
         local container = map:FindFirstChild("CoinContainer")
         if container then
@@ -113,16 +112,29 @@ local function GetClosestCoin()
         end
     end
 
-    -- 2. Перебираем МОНЕТЫ НАПРЯМУЮ (без GetDescendants)
+    -- 2. Перебираем монеты только внутри найденного CoinContainer
     if coinContainer then
         for _, obj in ipairs(coinContainer:GetChildren()) do
             if obj and obj.Parent and not CollectedCoins[obj] then
                 
-                -- Берем физический Part монеты или ее CoinVisual
-                local part = obj:IsA("BasePart") and obj 
-                    or obj:FindFirstChild("CoinVisual") 
-                    or (obj:IsA("Model") and (obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart")))
+                -- Добираемся ровно до целевого BasePart (MainCoin -> CoinVisual -> Part)
+                local part = nil
+                
+                if obj:IsA("BasePart") then
+                    part = obj
+                else
+                    -- Ищем точный путь CoinVisual.MainCoin или любой видимый BasePart
+                    local coinVisual = obj:FindFirstChild("CoinVisual")
+                    if coinVisual then
+                        part = coinVisual:FindFirstChild("MainCoin") or coinVisual:FindFirstChildWhichIsA("BasePart") or (coinVisual:IsA("BasePart") and coinVisual)
+                    end
+                    
+                    if not part then
+                        part = obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart", true)
+                    end
+                end
 
+                -- Проверяем физические координаты и прозрачность
                 if part and part:IsA("BasePart") and part.Parent and part.Transparency < 1 then
                     local coinPos = part.Position
                     if coinPos then
