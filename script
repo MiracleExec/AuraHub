@@ -29,24 +29,25 @@ local Tabs = {
 Tabs.AutoFarm:Section({Title = "Settings"})
 
 local AutoFarmCoins = false
-local MagnetSpeed = 25 -- Скорость перемещения (можно регулировать)
+local MagnetSpeed = 30 -- Скорость полета к монете
 local CollectedCoins = {}
 local NoclipConnection = nil
 
--- 1. Полное отключение коллизии и физики падения
+-- 1. Безопасный Noclip и удержание в воздухе
 local function EnablePhysics(state)
     local player = game.Players.LocalPlayer
     local char = player.Character
     if not char then return end
     
+    local hrp = char:FindFirstChild("HumanoidRootPart")
     local humanoid = char:FindFirstChildOfClass("Humanoid")
 
     if state then
-        -- Отключаем коллизию всех частей персонажа
+        -- Отключаем коллизию только для деталей персонажа (чтобы проходить сквозь стены)
         if not NoclipConnection then
             NoclipConnection = game:GetService("RunService").Stepped:Connect(function()
-                if char and char.Parent then
-                    for _, part in ipairs(char:GetDescendants()) do
+                if char and char.Parent and AutoFarmCoins then
+                    for _, part in ipairs(char:GetChildren()) do
                         if part:IsA("BasePart") then
                             part.CanCollide = false
                         end
@@ -55,27 +56,33 @@ local function EnablePhysics(state)
             end)
         end
 
-        -- Переводим в режим свободного перемещения (отключаем гравитацию для персонажа)
         if humanoid then
             humanoid.PlatformStand = true
         end
     else
-        -- Выключаем Noclip
+        -- Отключаем Noclip
         if NoclipConnection then
             NoclipConnection:Disconnect()
             NoclipConnection = nil
         end
 
-        -- Возвращаем нормальное состояние Humanoid
+        -- Возвращаем устойчивость персонажу
         if humanoid then
             humanoid.PlatformStand = false
+            humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
         end
 
-        -- Включаем обратно коллизию
-        for _, part in ipairs(char:GetDescendants()) do
+        -- Включаем коллизию обратно
+        for _, part in ipairs(char:GetChildren()) do
             if part:IsA("BasePart") then
                 part.CanCollide = true
             end
+        end
+
+        -- Приподнимаем персонажа чуть выше, чтобы он не застрял в текстурах пола
+        if hrp then
+            hrp.AssemblyLinearVelocity = Vector3.zero
+            hrp.CFrame = hrp.CFrame + Vector3.new(0, 2, 0)
         end
     end
 end
@@ -93,7 +100,7 @@ local function GetClosestCoin()
     local closestCoinPart = nil
     local shortestDistance = math.huge
     
-    -- Ищем активный CoinContainer во всех объектах workspace
+    -- Ищем активный CoinContainer
     local coinContainer = nil
     for _, map in ipairs(workspace:GetChildren()) do
         local container = map:FindFirstChild("CoinContainer")
@@ -105,7 +112,7 @@ local function GetClosestCoin()
 
     if coinContainer then
         for _, coinObj in ipairs(coinContainer:GetChildren()) do
-            -- Проверяем, не забанена ли монета в локальном списке
+            -- Проверяем, не забанена ли монета локально
             if coinObj and coinObj.Parent and not CollectedCoins[coinObj] then
                 local targetPart = nil
                 
@@ -123,7 +130,7 @@ local function GetClosestCoin()
                     end
                 end
 
-                -- Проверяем, что деталь видима и валидна
+                -- Проверяем, что деталь видима и не прозрачна (не поднята)
                 if targetPart and targetPart:IsA("BasePart") and targetPart.Parent and targetPart.Transparency < 1 then
                     local dist = (myPos - targetPart.Position).Magnitude
                     if dist < shortestDistance then
@@ -152,7 +159,7 @@ Tabs.AutoFarm:Toggle({
     end
 })
 
--- 4. Главный цикл полета через CFrame
+-- 4. Стабильный цикл полета
 task.spawn(function()
     while true do
         local dt = task.wait()
@@ -166,6 +173,9 @@ task.spawn(function()
                 local humanoid = char:FindFirstChildOfClass("Humanoid")
                 
                 if hrp and humanoid and humanoid.Health > 0 then
+                    -- Всегда сбрасываем вектор падения, чтобы не проваливаться сквозь карту
+                    hrp.AssemblyLinearVelocity = Vector3.zero
+                    
                     local targetCoin = GetClosestCoin()
                     
                     if targetCoin and targetCoin.Parent then
@@ -174,10 +184,10 @@ task.spawn(function()
                         local distance = (targetPos - currentPos).Magnitude
                         
                         if distance <= 2 then
-                            -- Долетели: касаемся монеты и метку ставим на контейнер монеты
+                            -- Долетели: телепортируемся ровно на монету для сбора
                             hrp.CFrame = targetCoin.CFrame
                             
-                            -- Заносим саму деталь и её родителя в список собранных
+                            -- Заносим деталь и ее родительские модели в черные списки
                             CollectedCoins[targetCoin] = true
                             if targetCoin.Parent then
                                 CollectedCoins[targetCoin.Parent] = true
@@ -186,9 +196,9 @@ task.spawn(function()
                                 CollectedCoins[targetCoin.Parent.Parent] = true
                             end
                             
-                            task.wait(0.05)
+                            task.wait(0.03)
                         else
-                            -- Плавное перемещение CFrame к монете
+                            -- Перемещаем CFrame по направлению к монете
                             local direction = (targetPos - currentPos).Unit
                             local moveStep = direction * (MagnetSpeed * dt * 10)
                             
@@ -197,10 +207,10 @@ task.spawn(function()
                             else
                                 hrp.CFrame = CFrame.new(currentPos + moveStep)
                             end
-                            
-                            -- Сбрасываем скорость падения
-                            hrp.AssemblyLinearVelocity = Vector3.zero
                         end
+                    else
+                        -- Если монет нет: удерживаем персонажа на текущей позиции CFrame, не давая ему упасть
+                        hrp.CFrame = CFrame.new(hrp.Position)
                     end
                 end
             end
