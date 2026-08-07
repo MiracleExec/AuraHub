@@ -20,32 +20,35 @@ local Window = WindUI:CreateWindow({
     ScrollBarEnabled = false
 })
 
--- Вкладки
 local Tabs = {
     AutoFarm = Window:Tab({ Title = "AutoFarm", Icon = "boxes" })
 }
 
--- Настройки автофарма
 Tabs.AutoFarm:Section({Title = "Settings"})
 
 local AutoFarmCoins = false
-local MagnetSpeed = 30 -- Скорость полета к монете
+local MagnetSpeed = 35 -- Скорость движения
 local CollectedCoins = {}
-local NoclipConnection = nil
 
--- 1. Безопасный Noclip и удержание в воздухе
-local function EnablePhysics(state)
-    local player = game.Players.LocalPlayer
-    local char = player.Character
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+
+local HeartbeatConnection = nil
+local SteppedConnection = nil
+
+-- 1. Полный контроль физики: заморозка падения + Noclip
+local function SetPhysicsState(enabled)
+    local char = LocalPlayer.Character
     if not char then return end
     
     local hrp = char:FindFirstChild("HumanoidRootPart")
     local humanoid = char:FindFirstChildOfClass("Humanoid")
 
-    if state then
-        -- Отключаем коллизию только для деталей персонажа (чтобы проходить сквозь стены)
-        if not NoclipConnection then
-            NoclipConnection = game:GetService("RunService").Stepped:Connect(function()
+    if enabled then
+        -- Отключаем коллизию персонажа на каждом кадре
+        if not SteppedConnection then
+            SteppedConnection = RunService.Stepped:Connect(function()
                 if char and char.Parent and AutoFarmCoins then
                     for _, part in ipairs(char:GetChildren()) do
                         if part:IsA("BasePart") then
@@ -56,43 +59,52 @@ local function EnablePhysics(state)
             end)
         end
 
-        if humanoid then
-            humanoid.PlatformStand = true
-        end
-    else
-        -- Отключаем Noclip
-        if NoclipConnection then
-            NoclipConnection:Disconnect()
-            NoclipConnection = nil
+        -- Убираем физическое падение (Anchored) или нулевой вектор
+        if not HeartbeatConnection then
+            HeartbeatConnection = RunService.Heartbeat:Connect(function()
+                if char and char.Parent and AutoFarmCoins and hrp then
+                    -- Полностью гасим любую кинетическую скорость падения
+                    hrp.AssemblyLinearVelocity = Vector3.zero
+                    hrp.AssemblyAngularVelocity = Vector3.zero
+                end
+            end)
         end
 
-        -- Возвращаем устойчивость персонажу
         if humanoid then
-            humanoid.PlatformStand = false
+            humanoid:ChangeState(Enum.HumanoidStateType.Flying)
+        end
+    else
+        -- Отключаем соединения
+        if SteppedConnection then
+            SteppedConnection:Disconnect()
+            SteppedConnection = nil
+        end
+        if HeartbeatConnection then
+            HeartbeatConnection:Disconnect()
+            HeartbeatConnection = nil
+        end
+
+        -- Возвращаем физику в норму
+        if humanoid then
             humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
         end
 
-        -- Включаем коллизию обратно
         for _, part in ipairs(char:GetChildren()) do
             if part:IsA("BasePart") then
                 part.CanCollide = true
             end
         end
 
-        -- Приподнимаем персонажа чуть выше, чтобы он не застрял в текстурах пола
         if hrp then
             hrp.AssemblyLinearVelocity = Vector3.zero
-            hrp.CFrame = hrp.CFrame + Vector3.new(0, 2, 0)
         end
     end
 end
 
--- 2. Глубокий и точный поиск детали монеты
+-- 2. Поиск ближайшей монеты
 local function GetClosestCoin()
-    local player = game.Players.LocalPlayer
-    local char = player.Character
+    local char = LocalPlayer.Character
     if not char then return nil end
-    
     local hrp = char:FindFirstChild("HumanoidRootPart")
     if not hrp then return nil end
     
@@ -100,7 +112,6 @@ local function GetClosestCoin()
     local closestCoinPart = nil
     local shortestDistance = math.huge
     
-    -- Ищем активный CoinContainer
     local coinContainer = nil
     for _, map in ipairs(workspace:GetChildren()) do
         local container = map:FindFirstChild("CoinContainer")
@@ -112,25 +123,21 @@ local function GetClosestCoin()
 
     if coinContainer then
         for _, coinObj in ipairs(coinContainer:GetChildren()) do
-            -- Проверяем, не забанена ли монета локально
             if coinObj and coinObj.Parent and not CollectedCoins[coinObj] then
                 local targetPart = nil
                 
                 if coinObj:IsA("BasePart") then
                     targetPart = coinObj
                 else
-                    -- Ищем MainCoin внутри CoinVisual или напрямую в модели
                     local coinVisual = coinObj:FindFirstChild("CoinVisual")
                     if coinVisual then
                         targetPart = coinVisual:FindFirstChild("MainCoin") or coinVisual:FindFirstChildWhichIsA("BasePart")
                     end
-                    
                     if not targetPart then
                         targetPart = coinObj:FindFirstChild("MainCoin") or coinObj.PrimaryPart or coinObj:FindFirstChildWhichIsA("BasePart", true)
                     end
                 end
 
-                -- Проверяем, что деталь видима и не прозрачна (не поднята)
                 if targetPart and targetPart:IsA("BasePart") and targetPart.Parent and targetPart.Transparency < 1 then
                     local dist = (myPos - targetPart.Position).Magnitude
                     if dist < shortestDistance then
@@ -145,13 +152,13 @@ local function GetClosestCoin()
     return closestCoinPart
 end
 
--- 3. Переключатель WindUI
+-- 3. Переключатель
 Tabs.AutoFarm:Toggle({
     Title = "Auto Farm",
     Value = false,
     Callback = function(state)
         AutoFarmCoins = state
-        EnablePhysics(state)
+        SetPhysicsState(state)
         
         if not state then
             table.clear(CollectedCoins)
@@ -159,23 +166,18 @@ Tabs.AutoFarm:Toggle({
     end
 })
 
--- 4. Стабильный цикл полета
+-- 4. Главный цикл движения
 task.spawn(function()
     while true do
-        local dt = task.wait()
+        local dt = RunService.RenderStepped:Wait()
         
         if AutoFarmCoins then
-            local player = game.Players.LocalPlayer
-            local char = player.Character
-            
+            local char = LocalPlayer.Character
             if char and char.Parent then
                 local hrp = char:FindFirstChild("HumanoidRootPart")
                 local humanoid = char:FindFirstChildOfClass("Humanoid")
                 
                 if hrp and humanoid and humanoid.Health > 0 then
-                    -- Всегда сбрасываем вектор падения, чтобы не проваливаться сквозь карту
-                    hrp.AssemblyLinearVelocity = Vector3.zero
-                    
                     local targetCoin = GetClosestCoin()
                     
                     if targetCoin and targetCoin.Parent then
@@ -183,34 +185,22 @@ task.spawn(function()
                         local currentPos = hrp.Position
                         local distance = (targetPos - currentPos).Magnitude
                         
-                        if distance <= 2 then
-                            -- Долетели: телепортируемся ровно на монету для сбора
+                        if distance <= 2.5 then
+                            -- Телепорт прямо на монету
                             hrp.CFrame = targetCoin.CFrame
                             
-                            -- Заносим деталь и ее родительские модели в черные списки
                             CollectedCoins[targetCoin] = true
                             if targetCoin.Parent then
                                 CollectedCoins[targetCoin.Parent] = true
                             end
-                            if targetCoin.Parent and targetCoin.Parent.Parent and targetCoin.Parent.Parent ~= workspace then
-                                CollectedCoins[targetCoin.Parent.Parent] = true
-                            end
-                            
-                            task.wait(0.03)
+                            task.wait(0.02)
                         else
-                            -- Перемещаем CFrame по направлению к монете
+                            -- Плавный перелет к монете без использования физики движка
                             local direction = (targetPos - currentPos).Unit
-                            local moveStep = direction * (MagnetSpeed * dt * 10)
+                            local moveDistance = math.min(distance, MagnetSpeed * dt * 10)
                             
-                            if moveStep.Magnitude > distance then
-                                hrp.CFrame = CFrame.new(targetPos)
-                            else
-                                hrp.CFrame = CFrame.new(currentPos + moveStep)
-                            end
+                            hrp.CFrame = CFrame.new(currentPos + (direction * moveDistance))
                         end
-                    else
-                        -- Если монет нет: удерживаем персонажа на текущей позиции CFrame, не давая ему упасть
-                        hrp.CFrame = CFrame.new(hrp.Position)
                     end
                 end
             end
